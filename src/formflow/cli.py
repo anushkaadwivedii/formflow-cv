@@ -135,8 +135,8 @@ def main() -> int:
             repetitions=repetitions,
         )
     elif isinstance(annotator, CurlVideoAnnotator):
-        print(f"Completed curls: {len(annotator.analyzer.completed)}")
-        print(f"Incomplete attempts: {annotator.analyzer.incomplete_attempts}")
+        print(f"Completed curls: {len(annotator.completed)}")
+        print(f"Incomplete attempts: {annotator.incomplete_attempts}")
         repetitions = tuple(
             RepetitionSummary(
                 index=rep.index,
@@ -146,7 +146,7 @@ def main() -> int:
                 duration_seconds=rep.duration_frames / stats.source_fps,
                 minimum_joint_angle=rep.minimum_elbow_angle,
             )
-            for rep in annotator.analyzer.completed
+            for rep in annotator.completed
         )
         summary = SessionSummary(
             exercise="curl",
@@ -159,7 +159,7 @@ def main() -> int:
             processing_seconds=stats.elapsed_seconds,
             processing_fps=stats.processing_fps,
             completed_reps=len(repetitions),
-            incomplete_attempts=annotator.analyzer.incomplete_attempts,
+            incomplete_attempts=annotator.incomplete_attempts,
             repetitions=repetitions,
         )
     else:

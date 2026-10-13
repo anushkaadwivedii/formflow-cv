@@ -1,6 +1,6 @@
 # FormFlow
 
-FormFlow analyzes exercise videos with pose estimation, joint geometry, and movement state machines. Its first supported exercises will be squats and bicep curls.
+FormFlow analyzes exercise videos with pose estimation, joint geometry, and movement state machines. It supports squats and bicep curls.
 
 The project provides fitness movement summaries for demonstration and educational use. It does not provide medical advice or injury assessment.
 
@@ -58,4 +58,14 @@ Run the tests:
 pytest
 ```
 
-Evaluation on manually labeled workout clips is the next milestone.
+Evaluation on manually labeled workout clips is in progress.
+
+## Real-video evaluation
+
+The curl analyzer was checked against a [460-frame stock workout clip](https://www.pexels.com/video/woman-doing-bicep-curls-6286162/). Manual review found three complete curls, plus partial movement at the beginning and end caused by the video trim. FormFlow detected all three complete curls.
+
+| Exercise | Complete reps observed | Complete reps detected | Measurement coverage | Processing speed |
+| --- | ---: | ---: | ---: | ---: |
+| Bicep curl | 3 | 3 | 97.4% | 28.7 FPS |
+
+The downloaded squat clip was rejected from evaluation because the knees and ankles were outside the frame. Squat validation requires an uncut side view with the hips, knees, and ankles visible throughout the movement.

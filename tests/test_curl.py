@@ -7,7 +7,12 @@ from formflow.curl import CurlAnalyzer, CurlPhase, CurlVideoAnnotator
 from formflow.pose import BodyPart, BodySide, Keypoint, Pose
 
 
-def curl_pose(elbow_angle: float, *, confidence: float = 0.95) -> Pose:
+def curl_pose(
+    elbow_angle: float,
+    *,
+    right_elbow_angle: float | None = None,
+    confidence: float = 0.95,
+) -> Pose:
     points = [Keypoint(0, 0, 0.1) for _ in range(len(BodyPart))]
     wrist_x = sin(radians(elbow_angle)) * 100
     wrist_y = -cos(radians(elbow_angle)) * 100
@@ -19,6 +24,16 @@ def curl_pose(elbow_angle: float, *, confidence: float = 0.95) -> Pose:
         150 + wrist_y,
         confidence,
     )
+    if right_elbow_angle is not None:
+        right_wrist_x = sin(radians(right_elbow_angle)) * 100
+        right_wrist_y = -cos(radians(right_elbow_angle)) * 100
+        points[BodyPart.RIGHT_SHOULDER] = Keypoint(300, 50, confidence)
+        points[BodyPart.RIGHT_ELBOW] = Keypoint(300, 150, confidence)
+        points[BodyPart.RIGHT_WRIST] = Keypoint(
+            300 - right_wrist_x,
+            150 + right_wrist_y,
+            confidence,
+        )
     return Pose(tuple(points))
 
 
@@ -34,7 +49,7 @@ def test_analyzer_counts_complete_curl() -> None:
     assert results[-1].completed_reps == 1
     assert results[-1].phase is CurlPhase.EXTENDED
     assert analyzer.completed[0].minimum_elbow_angle == pytest.approx(45)
-    assert analyzer.completed[0].duration_frames == 7
+    assert analyzer.completed[0].duration_frames == 6
 
 
 def test_analyzer_records_incomplete_attempt() -> None:
@@ -71,6 +86,18 @@ def test_analyzer_uses_visible_body_side() -> None:
     assert result.elbow_angle == pytest.approx(165)
 
 
+def test_analyzer_can_track_a_fixed_body_side() -> None:
+    analyzer = CurlAnalyzer(body_side=BodySide.RIGHT, smoothing=1.0)
+
+    result = analyzer.update(
+        curl_pose(90, right_elbow_angle=150),
+        frame_index=0,
+    )
+
+    assert result.side is BodySide.RIGHT
+    assert result.elbow_angle == pytest.approx(150)
+
+
 def test_analyzer_smooths_angle_changes() -> None:
     analyzer = CurlAnalyzer(smoothing=0.5)
 
@@ -96,3 +123,35 @@ def test_video_annotator_draws_curl_status() -> None:
     assert np.any(output != 0)
     assert annotator.frames_processed == 1
     assert annotator.frames_with_measurement == 1
+
+
+def test_video_annotator_tracks_both_arms_independently() -> None:
+    curl_sequence = [165, 140, 100, 50, 45, 70, 110, 160]
+    angles = [
+        (left, 165)
+        for left in curl_sequence
+        for _ in range(4)
+    ] + [
+        (165, right)
+        for right in curl_sequence
+        for _ in range(4)
+    ]
+
+    class SequenceEstimator:
+        def __init__(self) -> None:
+            self.index = 0
+
+        def estimate(self, frame: np.ndarray) -> Pose:
+            left, right = angles[self.index]
+            self.index += 1
+            return curl_pose(left, right_elbow_angle=right)
+
+    annotator = CurlVideoAnnotator(SequenceEstimator())
+    frame = np.zeros((300, 420, 3), dtype=np.uint8)
+
+    for frame_index in range(len(angles)):
+        annotator(frame.copy(), frame_index)
+
+    assert len(annotator.completed) == 2
+    assert annotator.completed[0].index == 1
+    assert annotator.completed[1].index == 2

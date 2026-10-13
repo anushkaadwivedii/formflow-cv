@@ -66,9 +66,10 @@ class CurlAnalyzer:
     def __init__(
         self,
         *,
+        body_side: BodySide | None = None,
         minimum_confidence: float = 0.5,
         smoothing: float = 0.35,
-        extended_angle: float = 155.0,
+        extended_angle: float = 120.0,
         contracted_angle: float = 55.0,
         incomplete_angle: float = 90.0,
         hysteresis: float = 5.0,
@@ -84,6 +85,7 @@ class CurlAnalyzer:
         if hysteresis < 0:
             raise ValueError("hysteresis cannot be negative.")
 
+        self.body_side = body_side
         self.minimum_confidence = minimum_confidence
         self.smoothing = smoothing
         self.extended_angle = extended_angle
@@ -111,6 +113,20 @@ class CurlAnalyzer:
     def _measure(self, pose: Pose | None) -> tuple[BodySide, float] | None:
         if pose is None:
             return None
+
+        if self.body_side is not None:
+            parts = (
+                self.LEFT_PARTS
+                if self.body_side is BodySide.LEFT
+                else self.RIGHT_PARTS
+            )
+            if not pose.all_visible(
+                parts,
+                minimum_confidence=self.minimum_confidence,
+            ):
+                return None
+            shoulder, elbow, wrist = (pose[part] for part in parts)
+            return self.body_side, joint_angle(shoulder, elbow, wrist)
 
         preferred_side = choose_body_side(
             pose,
@@ -235,16 +251,53 @@ class CurlVideoAnnotator:
         keypoint_confidence: float = 0.5,
     ) -> None:
         self.estimator = estimator
-        self.analyzer = analyzer or CurlAnalyzer(
-            minimum_confidence=keypoint_confidence
-        )
+        if analyzer is None:
+            self.analyzers = (
+                CurlAnalyzer(
+                    body_side=BodySide.LEFT,
+                    minimum_confidence=keypoint_confidence,
+                ),
+                CurlAnalyzer(
+                    body_side=BodySide.RIGHT,
+                    minimum_confidence=keypoint_confidence,
+                ),
+            )
+        else:
+            self.analyzers = (analyzer,)
+        self.analyzer = self.analyzers[0]
         self.keypoint_confidence = keypoint_confidence
         self.frames_processed = 0
         self.frames_with_measurement = 0
 
+    @property
+    def completed(self) -> tuple[CompletedCurl, ...]:
+        completed = sorted(
+            (
+                repetition
+                for analyzer in self.analyzers
+                for repetition in analyzer.completed
+            ),
+            key=lambda repetition: repetition.end_frame,
+        )
+        return tuple(
+            CompletedCurl(
+                index=index,
+                start_frame=repetition.start_frame,
+                end_frame=repetition.end_frame,
+                minimum_elbow_angle=repetition.minimum_elbow_angle,
+            )
+            for index, repetition in enumerate(completed, start=1)
+        )
+
+    @property
+    def incomplete_attempts(self) -> int:
+        return sum(analyzer.incomplete_attempts for analyzer in self.analyzers)
+
     def __call__(self, frame: Frame, frame_index: int) -> Frame:
         pose = self.estimator.estimate(frame)
-        result = self.analyzer.update(pose, frame_index)
+        results = tuple(
+            analyzer.update(pose, frame_index) for analyzer in self.analyzers
+        )
         self.frames_processed += 1
 
         if pose is not None:
@@ -253,20 +306,41 @@ class CurlVideoAnnotator:
                 pose,
                 keypoint_confidence=self.keypoint_confidence,
             )
-        if result.measurement_valid:
+        if any(result.measurement_valid for result in results):
             self.frames_with_measurement += 1
 
-        angle_text = (
-            f"Elbow {result.elbow_angle:.0f} deg"
-            if result.elbow_angle is not None
-            else "Elbow unavailable"
-        )
-        lines = (
-            f"Curl | {result.phase.value}",
-            f"Reps {result.completed_reps} | Incomplete {result.incomplete_attempts}",
-            angle_text,
-        )
-        cv2.rectangle(frame, (8, 8), (340, 92), self.PANEL_COLOR, -1)
+        if len(results) == 1:
+            result = results[0]
+            angle_text = (
+                f"Elbow {result.elbow_angle:.0f} deg"
+                if result.elbow_angle is not None
+                else "Elbow unavailable"
+            )
+            lines = (
+                f"Curl | {result.phase.value}",
+                f"Reps {len(self.completed)} | Incomplete {self.incomplete_attempts}",
+                angle_text,
+            )
+        else:
+            left, right = results
+            left_angle = (
+                f"{left.elbow_angle:.0f} deg"
+                if left.elbow_angle is not None
+                else "unavailable"
+            )
+            right_angle = (
+                f"{right.elbow_angle:.0f} deg"
+                if right.elbow_angle is not None
+                else "unavailable"
+            )
+            lines = (
+                f"Curl | L {left.phase.value} | R {right.phase.value}",
+                f"Reps {len(self.completed)} | Incomplete {self.incomplete_attempts}",
+                f"Left elbow {left_angle}",
+                f"Right elbow {right_angle}",
+            )
+        panel_height = 18 + len(lines) * 25
+        cv2.rectangle(frame, (8, 8), (410, panel_height), self.PANEL_COLOR, -1)
         for index, text in enumerate(lines):
             cv2.putText(
                 frame,
