@@ -45,6 +45,7 @@ class SquatFrameResult:
     side: BodySide | None
     knee_angle: float | None
     hip_angle: float | None
+    depth_ratio: float | None
     completed_reps: int
     incomplete_attempts: int
     measurement_valid: bool
@@ -75,6 +76,10 @@ class SquatAnalyzer:
         bottom_angle: float = 100.0,
         incomplete_angle: float = 140.0,
         hysteresis: float = 5.0,
+        standing_depth_ratio: float = 0.30,
+        bottom_depth_ratio: float = 0.27,
+        incomplete_depth_ratio: float = 0.28,
+        depth_hysteresis: float = 0.01,
     ) -> None:
         if not 0.0 <= minimum_confidence <= 1.0:
             raise ValueError("minimum_confidence must be between 0 and 1.")
@@ -86,6 +91,18 @@ class SquatAnalyzer:
             )
         if hysteresis < 0:
             raise ValueError("hysteresis cannot be negative.")
+        if not (
+            0.0
+            < bottom_depth_ratio
+            < incomplete_depth_ratio
+            < standing_depth_ratio
+        ):
+            raise ValueError(
+                "Expected bottom_depth_ratio < incomplete_depth_ratio "
+                "< standing_depth_ratio."
+            )
+        if depth_hysteresis < 0:
+            raise ValueError("depth_hysteresis cannot be negative.")
 
         self.minimum_confidence = minimum_confidence
         self.smoothing = smoothing
@@ -93,31 +110,42 @@ class SquatAnalyzer:
         self.bottom_angle = bottom_angle
         self.incomplete_angle = incomplete_angle
         self.hysteresis = hysteresis
+        self.standing_depth_ratio = standing_depth_ratio
+        self.bottom_depth_ratio = bottom_depth_ratio
+        self.incomplete_depth_ratio = incomplete_depth_ratio
+        self.depth_hysteresis = depth_hysteresis
 
         self.phase = SquatPhase.UNKNOWN
         self.completed: list[CompletedSquat] = []
         self.incomplete_attempts = 0
         self._smoothed_knee_angle: float | None = None
+        self._smoothed_depth_ratio: float | None = None
         self._attempt_start_frame: int | None = None
         self._attempt_minimum_angle: float | None = None
+        self._attempt_minimum_depth_ratio: float | None = None
 
     def update(self, pose: Pose | None, frame_index: int) -> SquatFrameResult:
         measurement = self._measure(pose)
         if measurement is None:
-            return self._result(frame_index, None, None, None, False)
+            return self._result(frame_index, None, None, None, None, False)
 
-        side, raw_knee_angle, hip_angle = measurement
+        side, raw_knee_angle, hip_angle, raw_depth_ratio = measurement
         knee_angle = self._smooth(raw_knee_angle)
-        self._update_phase(knee_angle, frame_index)
+        depth_ratio = self._smooth_depth_ratio(raw_depth_ratio)
+        self._update_phase(knee_angle, depth_ratio, frame_index)
         return self._result(
             frame_index,
             side,
             knee_angle,
             hip_angle,
+            depth_ratio,
             True,
         )
 
-    def _measure(self, pose: Pose | None) -> tuple[BodySide, float, float] | None:
+    def _measure(
+        self,
+        pose: Pose | None,
+    ) -> tuple[BodySide, float, float, float] | None:
         if pose is None:
             return None
 
@@ -144,10 +172,14 @@ class SquatAnalyzer:
             ):
                 continue
             shoulder, hip, knee, ankle = (pose[part] for part in parts)
+            body_height = abs(ankle.y - shoulder.y)
+            if body_height == 0:
+                continue
             return (
                 side,
                 joint_angle(hip, knee, ankle),
                 joint_angle(shoulder, hip, knee),
+                abs(knee.y - hip.y) / body_height,
             )
         return None
 
@@ -161,17 +193,43 @@ class SquatAnalyzer:
             )
         return self._smoothed_knee_angle
 
-    def _update_phase(self, knee_angle: float, frame_index: int) -> None:
+    def _smooth_depth_ratio(self, depth_ratio: float) -> float:
+        if self._smoothed_depth_ratio is None:
+            self._smoothed_depth_ratio = depth_ratio
+        else:
+            self._smoothed_depth_ratio = (
+                self.smoothing * depth_ratio
+                + (1.0 - self.smoothing) * self._smoothed_depth_ratio
+            )
+        return self._smoothed_depth_ratio
+
+    def _is_standing(self, knee_angle: float, depth_ratio: float) -> bool:
+        return (
+            knee_angle >= self.standing_angle
+            and depth_ratio >= self.standing_depth_ratio
+        )
+
+    def _update_phase(
+        self,
+        knee_angle: float,
+        depth_ratio: float,
+        frame_index: int,
+    ) -> None:
         if self.phase is SquatPhase.UNKNOWN:
-            if knee_angle >= self.standing_angle:
+            if self._is_standing(knee_angle, depth_ratio):
                 self.phase = SquatPhase.STANDING
             return
 
         if self.phase is SquatPhase.STANDING:
-            if knee_angle < self.standing_angle - self.hysteresis:
+            if (
+                knee_angle < self.standing_angle - self.hysteresis
+                or depth_ratio
+                < self.standing_depth_ratio - self.depth_hysteresis
+            ):
                 self.phase = SquatPhase.DESCENDING
                 self._attempt_start_frame = frame_index
                 self._attempt_minimum_angle = knee_angle
+                self._attempt_minimum_depth_ratio = depth_ratio
             return
 
         if self._attempt_minimum_angle is None:
@@ -181,23 +239,44 @@ class SquatAnalyzer:
                 self._attempt_minimum_angle,
                 knee_angle,
             )
+        if self._attempt_minimum_depth_ratio is None:
+            self._attempt_minimum_depth_ratio = depth_ratio
+        else:
+            self._attempt_minimum_depth_ratio = min(
+                self._attempt_minimum_depth_ratio,
+                depth_ratio,
+            )
 
         if self.phase is SquatPhase.DESCENDING:
-            if knee_angle <= self.bottom_angle:
+            if (
+                knee_angle <= self.bottom_angle
+                or depth_ratio <= self.bottom_depth_ratio
+            ):
                 self.phase = SquatPhase.BOTTOM
-            elif knee_angle >= self.standing_angle:
-                if self._attempt_minimum_angle <= self.incomplete_angle:
+            elif self._is_standing(knee_angle, depth_ratio):
+                if (
+                    self._attempt_minimum_angle <= self.incomplete_angle
+                    or self._attempt_minimum_depth_ratio
+                    <= self.incomplete_depth_ratio
+                ):
                     self.incomplete_attempts += 1
                 self._reset_attempt()
                 self.phase = SquatPhase.STANDING
             return
 
         if self.phase is SquatPhase.BOTTOM:
-            if knee_angle > self.bottom_angle + self.hysteresis:
+            if (
+                knee_angle > self.bottom_angle + self.hysteresis
+                and depth_ratio
+                > self.bottom_depth_ratio + self.depth_hysteresis
+            ):
                 self.phase = SquatPhase.ASCENDING
             return
 
-        if self.phase is SquatPhase.ASCENDING and knee_angle >= self.standing_angle:
+        if self.phase is SquatPhase.ASCENDING and self._is_standing(
+            knee_angle,
+            depth_ratio,
+        ):
             start_frame = self._attempt_start_frame
             minimum_angle = self._attempt_minimum_angle
             if start_frame is not None and minimum_angle is not None:
@@ -215,6 +294,7 @@ class SquatAnalyzer:
     def _reset_attempt(self) -> None:
         self._attempt_start_frame = None
         self._attempt_minimum_angle = None
+        self._attempt_minimum_depth_ratio = None
 
     def _result(
         self,
@@ -222,6 +302,7 @@ class SquatAnalyzer:
         side: BodySide | None,
         knee_angle: float | None,
         hip_angle: float | None,
+        depth_ratio: float | None,
         measurement_valid: bool,
     ) -> SquatFrameResult:
         return SquatFrameResult(
@@ -230,6 +311,7 @@ class SquatAnalyzer:
             side=side,
             knee_angle=knee_angle,
             hip_angle=hip_angle,
+            depth_ratio=depth_ratio,
             completed_reps=len(self.completed),
             incomplete_attempts=self.incomplete_attempts,
             measurement_valid=measurement_valid,
@@ -276,12 +358,18 @@ class SquatVideoAnnotator:
             if result.knee_angle is not None
             else "Knee unavailable"
         )
+        depth_text = (
+            f"Depth ratio {result.depth_ratio:.2f}"
+            if result.depth_ratio is not None
+            else "Depth unavailable"
+        )
         lines = (
             f"Squat | {result.phase.value}",
             f"Reps {result.completed_reps} | Incomplete {result.incomplete_attempts}",
             angle_text,
+            depth_text,
         )
-        cv2.rectangle(frame, (8, 8), (340, 92), self.PANEL_COLOR, -1)
+        cv2.rectangle(frame, (8, 8), (340, 117), self.PANEL_COLOR, -1)
         for index, text in enumerate(lines):
             cv2.putText(
                 frame,

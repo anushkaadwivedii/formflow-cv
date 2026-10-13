@@ -23,6 +23,19 @@ def squat_pose(knee_angle: float, *, confidence: float = 0.95) -> Pose:
     return Pose(tuple(points))
 
 
+def front_squat_pose(depth_ratio: float) -> Pose:
+    points = [Keypoint(0, 0, 0.1) for _ in range(len(BodyPart))]
+    points[BodyPart.LEFT_SHOULDER] = Keypoint(100, 50, 0.95)
+    points[BodyPart.LEFT_HIP] = Keypoint(100, 150, 0.95)
+    points[BodyPart.LEFT_KNEE] = Keypoint(
+        100,
+        150 + depth_ratio * 300,
+        0.95,
+    )
+    points[BodyPart.LEFT_ANKLE] = Keypoint(100, 350, 0.95)
+    return Pose(tuple(points))
+
+
 def test_analyzer_counts_complete_squat() -> None:
     analyzer = SquatAnalyzer(smoothing=1.0)
     sequence = [175, 150, 120, 95, 90, 115, 145, 165]
@@ -49,6 +62,19 @@ def test_analyzer_records_incomplete_attempt() -> None:
     assert result is not None
     assert result.completed_reps == 0
     assert result.incomplete_attempts == 1
+    assert result.phase is SquatPhase.STANDING
+
+
+def test_analyzer_counts_front_view_squat_from_normalized_depth() -> None:
+    analyzer = SquatAnalyzer(smoothing=1.0)
+    depth_sequence = [0.33, 0.31, 0.285, 0.25, 0.22, 0.25, 0.285, 0.31]
+
+    result = None
+    for frame_index, depth_ratio in enumerate(depth_sequence):
+        result = analyzer.update(front_squat_pose(depth_ratio), frame_index)
+
+    assert result is not None
+    assert result.completed_reps == 1
     assert result.phase is SquatPhase.STANDING
 
 

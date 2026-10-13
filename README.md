@@ -58,14 +58,17 @@ Run the tests:
 pytest
 ```
 
-Evaluation on manually labeled workout clips is in progress.
+The initial real-video evaluation covers both supported exercises.
 
 ## Real-video evaluation
 
 The curl analyzer was checked against a [460-frame stock workout clip](https://www.pexels.com/video/woman-doing-bicep-curls-6286162/). Manual review found three complete curls, plus partial movement at the beginning and end caused by the video trim. FormFlow detected all three complete curls.
 
+The squat analyzer was checked against a [495-frame front-view workout clip](https://www.pexels.com/video/woman-doing-squat-exercise-5034577/). Manual review found five complete squats. FormFlow detected all five using knee angles and normalized hip-to-knee movement.
+
 | Exercise | Complete reps observed | Complete reps detected | Measurement coverage | Processing speed |
 | --- | ---: | ---: | ---: | ---: |
 | Bicep curl | 3 | 3 | 97.4% | 28.7 FPS |
+| Squat | 5 | 5 | 100.0% | 23.7 FPS |
 
-The downloaded squat clip was rejected from evaluation because the knees and ankles were outside the frame. Squat validation requires an uncut side view with the hips, knees, and ankles visible throughout the movement.
+An earlier squat clip was rejected because the knees and ankles were outside the frame. Squat evaluation requires an uncut view with the hips, knees, and ankles visible throughout the movement.
